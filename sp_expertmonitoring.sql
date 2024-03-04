@@ -1,3 +1,4 @@
+-- Criado por Gabriel Finelli DBA SQL SERVER
 CREATE PROCEDURE sp_DBAExpertMonitoring
 AS
 BEGIN
