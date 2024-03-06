@@ -1,0 +1,292 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, font, scrolledtext
+from tkinter import simpledialog
+from PIL import Image, ImageTk
+import pyperclip
+import pyodbc
+import webbrowser
+
+
+def generate_table_ddl(cursor, table_name):
+    ddl_lines = [f'Table "{table_name}" {{']
+
+    cursor.execute(f"""
+        SELECT 
+            COLUMN_NAME, 
+            DATA_TYPE, 
+            CHARACTER_MAXIMUM_LENGTH, 
+            IS_NULLABLE 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_NAME = '{table_name.split('.')[-1]}'
+    """)
+    columns = cursor.fetchall()
+
+    for col in columns:
+        col_def = f'  "{col.COLUMN_NAME}" {col.DATA_TYPE}'
+        if col.CHARACTER_MAXIMUM_LENGTH and col.CHARACTER_MAXIMUM_LENGTH != -1:
+            col_def += f'({col.CHARACTER_MAXIMUM_LENGTH})'
+        elif col.DATA_TYPE == 'varbinary' and col.CHARACTER_MAXIMUM_LENGTH == -1:
+            col_def += '(max)'
+        col_def += ' ['
+        col_def += 'not null' if col.IS_NULLABLE == 'NO' else 'null'
+        col_def += ', increment]' if 'int' in col.DATA_TYPE else ']'
+        ddl_lines.append(col_def)
+
+    ddl_lines.append('\nIndexes {')
+    if columns:
+        ddl_lines.append(f'  "{columns[0].COLUMN_NAME}" [pk]')
+    ddl_lines.append('}\n}')
+
+    return "\n".join(ddl_lines)
+
+
+def fetch_foreign_keys(cursor):
+    cursor.execute("""
+        SELECT 
+            OBJECT_SCHEMA_NAME(fk.parent_object_id) + '.' + OBJECT_NAME(fk.parent_object_id) AS ParentTable,
+            COL_NAME(fkc.parent_object_id, fkc.parent_column_id) AS ParentColumn,
+            OBJECT_SCHEMA_NAME(fk.referenced_object_id) + '.' + OBJECT_NAME(fk.referenced_object_id) AS ReferencedTable,
+            COL_NAME(fkc.referenced_object_id, fkc.referenced_column_id) AS ReferencedColumn
+        FROM 
+            sys.foreign_keys AS fk
+            INNER JOIN sys.foreign_key_columns AS fkc 
+                ON fk.object_id = fkc.constraint_object_id
+    """)
+    return cursor.fetchall()
+
+
+def fetch_ddl_for_all_tables(cursor):
+    ddl_statements = []
+    cursor.execute("""
+        SELECT TABLE_SCHEMA + '.' + TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_TYPE = 'BASE TABLE' 
+        AND TABLE_NAME != 'sysdiagrams'
+    """)
+    tables = cursor.fetchall()
+    for table in tables:
+        table_name = table[0]
+        ddl_statement = generate_table_ddl(cursor, table_name)
+        ddl_statements.append(ddl_statement)
+
+    foreign_keys = fetch_foreign_keys(cursor)
+    fk_lines = [f'Ref: "{fk.ParentTable}"."{fk.ParentColumn}" < "{fk.ReferencedTable}"."{fk.ReferencedColumn}"' for fk
+                in foreign_keys]
+
+    return ddl_statements, fk_lines
+
+
+def extract_ddl(server, database, username, password, file_path, text_widget):
+    conn_str = f'DRIVER={{SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password}'
+    try:
+        connection = pyodbc.connect(conn_str)
+        cursor = connection.cursor()
+
+        ddl_statements, fk_lines = fetch_ddl_for_all_tables(cursor)
+
+        extracted_data = "\n\n".join(ddl_statements) + "\n\n" + "\n".join(fk_lines)
+
+        with open(file_path, 'w') as file:
+            file.write(extracted_data)
+
+        text_widget.insert(tk.END, extracted_data)
+
+        messagebox.showinfo("Sucesso", "DDL extraído com sucesso!")
+    except Exception as e:
+        messagebox.showerror("Erro", f"Ocorreu um erro: {e}")
+    finally:
+        connection.close()
+
+####################
+def select_all(text_widget):
+    text_widget.focus_set()  # Garante que o widget de texto esteja focado
+    text_widget.tag_add(tk.SEL, "1.0", tk.END)  # Seleciona todo o texto
+    text_widget.mark_set(tk.INSERT, "1.0")  # Move o cursor para o início do texto
+    text_widget.see(tk.INSERT)  # Garante que o início do texto esteja visível
+#####################
+####################
+
+#######################
+def gui():
+    root = tk.Tk()
+    root.title("DBDiagram Extractor SQL Server")
+    root.geometry('750x600')
+    root.resizable(False, False)  # Desabilita o redimensionamento
+
+    bold_font = font.Font(weight="bold")  # Define a fonte em negrito
+
+    icon_path = r'icone.png'
+    icon = Image.open(icon_path)
+    root.iconbitmap('icon.ico')
+    icon = icon.resize((200, 200))  # ajuste o tamanho conforme necessário
+    icon_photo = ImageTk.PhotoImage(icon)
+    root.iconphoto(True, icon_photo)
+
+    title_text = "DBDiagram Extractor SQL Server\nDesenvolvido por Gabriel Finelli, Versão 0.1 Beta"
+    title_label = tk.Label(root, text=title_text, font=bold_font, justify='left')
+    title_label.grid(row=0, column=0, columnspan=4, sticky='w', padx=10, pady=10)
+    root.title("DBDiagram Extractor - Gabriel Finelli DBA - v0.1")
+    contact_text = "gabrielfinelli@gmail.com\nhttps://linkedin.com/in/gabrielfinelli"
+
+    contact_email = "gabrielfinelli@gmail.com"
+    contact_website = "https://linkedin.com/in/gabrielfinelli"
+
+    contact_text_widget = tk.Text(root, wrap='word', height=2, width=50, bg=root.cget('bg'), bd=0)
+    contact_text_widget.grid(row=1, column=0, columnspan=4, sticky='w', padx=10)
+
+    contact_text_widget.tag_configure('email_link', foreground='blue', underline=True)
+    contact_text_widget.tag_configure('website_link', foreground='blue', underline=True)
+
+    # Adicionando "mailto:" ao link do email
+    contact_email_link = f"mailto:{contact_email}"
+
+    # Adicionando "https://" ao link do site
+    contact_website_link = contact_website if contact_website.startswith("http") else f"https://{contact_website}"
+
+    contact_text_widget.insert('1.0', f"{contact_email_link}\n{contact_website_link}")
+
+    # Adicionando os eventos de clique para os links
+    contact_text_widget.tag_bind('email_link', '<Button-1>', lambda event: webbrowser.open_new_tab(contact_email_link))
+    contact_text_widget.tag_bind('website_link', '<Button-1>',
+                                 lambda event: webbrowser.open_new_tab(contact_website_link))
+
+    # Aplicando estilos de link aos textos do e-mail e do site
+    contact_text_widget.tag_add('email_link', '1.0', '1.end')
+    contact_text_widget.tag_add('website_link', '2.0', '2.end')
+    contact_text_widget.config(cursor='hand2')
+
+    labels = ['Server IP:', 'Database Name:', 'Username:', 'Password:']
+    entries = []
+    for i, label_text in enumerate(labels, 2):
+        label = tk.Label(root, text=label_text)
+        entry = tk.Entry(root)
+        label.grid(row=i, column=0, padx=(10, 5), pady=5, sticky='w')
+        entry.grid(row=i, column=0, padx=(1, 10), pady=5)
+        entries.append(entry)
+
+    entries[3].config(show="*")  # Configurando a entrada de senha para exibir '*' em vez de texto claro
+
+    icon_label = tk.Label(root, image=icon_photo)
+    icon_label.image = icon_photo
+    icon_label.place(relx=0.6, rely=0.25, anchor='center')  # Centralizar a imagem na janela
+
+    server_entry = entries[0]
+    database_entry = entries[1]
+    username_entry = entries[2]
+    password_entry = entries[3]  # Mudei o índice para o correto
+
+    text_widget = scrolledtext.ScrolledText(root, wrap=tk.WORD, width=90, height=20, bg='black', fg='orange')
+    text_widget.grid(row=7, column=0, columnspan=4, padx=10, pady=10)
+    context_menu = tk.Menu(root, tearoff=0)
+
+    # Adicionando as opções ao menu de contexto
+    context_menu.add_command(label="Selecionar tudo", command=lambda: select_all(text_widget))
+    context_menu.add_command(label="Copiar", command=lambda: text_widget.event_generate("<<Copy>>"))
+    context_menu.add_command(label="Colar", command=lambda: text_widget.event_generate("<<Paste>>"))
+
+
+    # Função para mostrar o menu de contexto
+    def show_context_menu(event):
+        context_menu.tk_popup(event.x_root, event.y_root)
+
+    # Associando a função ao evento de clique do botão direito do mouse
+    text_widget.bind("<Button-3>", show_context_menu)
+
+    info_text_widget = tk.Text(root, wrap='word', height=8, width=75, bg=root.cget('bg'), bd=0)
+    pre_link_text = ("Extração DBML SQL Server."
+                     "\n 1 - Insira as informações."
+                     "\n 2 - Clique em Importar."
+                     "\n 3 - Copie o código."
+                     "\n 4 - Cole no ")
+    link_text = "DBDiagram.IO"
+    post_link_text = "\n Extras:\n 5 - Salvar como TXT."
+
+    # Insere o texto antes do link
+    info_text_widget.insert('1.0', pre_link_text)
+
+    # Calcula a posição inicial do link
+    line_number = pre_link_text.count('\n') + 1  # Adiciona 1 porque Tkinter conta linhas a partir de 1
+    column_number = len(pre_link_text.split('\n')[-1])  # Pega o tamanho da última linha do texto antes do link
+
+    # Insere o texto do link
+    info_text_widget.insert(tk.END, link_text)
+
+    # Insere o texto após o link
+    info_text_widget.insert(tk.END, post_link_text)
+
+    # Adiciona o tag do link ao texto do link
+    info_text_widget.tag_add("link", f"{line_number}.{column_number}",
+                             f"{line_number}.{column_number + len(link_text)}")
+    info_text_widget.tag_config("link", foreground="blue", underline=1)
+
+    # Função para abrir o link
+    def open_link(event):
+        webbrowser.open_new("https://dbdiagram.io")
+
+    info_text_widget.tag_bind("link", "<Button-1>", open_link)
+    info_text_widget.config(state="disabled", cursor="arrow")  # Desabilita a edição do texto
+    info_text_widget.place(relx=1.5, rely=0.05, anchor='ne')
+
+    def clear_text():
+        text_widget.delete(1.0, tk.END)
+
+    clear_button = tk.Button(root, text="Limpar", command=clear_text)
+    clear_button.grid(row=6, column=0, pady=(10, 0), padx=(5, 0))
+
+    def on_extract_click():
+        server = server_entry.get()
+        database = database_entry.get()
+        username = username_entry.get()
+        password = password_entry.get()
+        file_path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt")])
+
+        if file_path:
+            extract_ddl(server, database, username, password, file_path, text_widget)
+
+    extract_button = tk.Button(root, text="Salvar TXT", command=on_extract_click)
+    extract_button.grid(row=6, column=0,padx=(440,0), pady=(10, 0))
+
+    def on_copy_click():
+        extracted_data = text_widget.get("1.0", tk.END).strip()
+        if extracted_data:
+            pyperclip.copy(extracted_data)
+            messagebox.showinfo("Sucesso", "Código copiado para a área de transferência!")
+        else:
+            messagebox.showerror("Erro", "Não há código para copiar!")
+
+    copy_button = tk.Button(root, text="Copiar Código", command=on_copy_click)
+    copy_button.grid(row=6, column=0,padx=(275,0), pady=(10, 0))
+
+    def on_import_click():
+        server = server_entry.get()
+        database = database_entry.get()
+        username = username_entry.get()
+        password = password_entry.get()
+
+        if all((server, database, username, password)):
+            text_widget.delete('1.0', tk.END)  # Limpar o conteúdo existente na caixa de texto
+            try:
+                connection = pyodbc.connect(
+                    f'DRIVER={{SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password}')
+                cursor = connection.cursor()
+
+                ddl_statements, fk_lines = fetch_ddl_for_all_tables(cursor)
+
+                extracted_data = "\n\n".join(ddl_statements) + "\n\n" + "\n".join(fk_lines)
+
+                text_widget.insert(tk.END, extracted_data)
+                messagebox.showinfo("Sucesso", "DDL extraído com sucesso!")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Ocorreu um erro: {e}")
+            finally:
+                connection.close()
+        else:
+            messagebox.showerror("Erro", "Por favor, preencha todos os campos.")
+
+    import_button = tk.Button(root, text="Importar", command=on_import_click)
+    import_button.grid(row=6, column=0,padx=(120,0), pady=(10, 0))
+
+    root.mainloop()
+
+
+gui()
